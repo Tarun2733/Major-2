@@ -40,7 +40,9 @@ func handleConnection(conn net.Conn) {
 
 		// Process request and generate response
 		res := handleRequest(req[:n])
-		conn.Write(res)
+		if res != nil {
+			conn.Write(res)
+		}
 	}
 }
 
@@ -53,6 +55,10 @@ type RequestHeader struct {
 
 // Function to parse headers from Kafka-like requests
 func parseHeaders(req []byte) *RequestHeader {
+	if len(req) < 12 {
+		fmt.Println("Invalid request: not enough bytes for headers")
+		return nil
+	}
 	return &RequestHeader{
 		requestApiKey:     int16(binary.BigEndian.Uint16(req[4:6])),
 		requestApiVersion: int16(binary.BigEndian.Uint16(req[6:8])),
@@ -68,8 +74,7 @@ func makeResponse(reqHeaders *RequestHeader) []byte {
 	// If API version is unsupported, return error
 	if reqHeaders.requestApiVersion < 0 || reqHeaders.requestApiVersion > 4 {
 		res = append(res, 0, 35) // Error code 35 (unsupported version)
-		setMessageSize(res)
-		return res
+		return setMessageSize(res)
 	}
 
 	// Handle API key 18 (GetApiVersions request)
@@ -82,19 +87,31 @@ func makeResponse(reqHeaders *RequestHeader) []byte {
 			0, 0, 0, 0, // Throttle time
 			0, // Tagged fields
 		)
+	} else {
+		// Unrecognized API key
+		fmt.Println("Unsupported API Key:", reqHeaders.requestApiKey)
+		res = append(res, 0, 42) // Error code 42 (unsupported API key)
 	}
 
-	setMessageSize(res)
-	return res
+	return setMessageSize(res)
 }
 
 // Function to set the message size at the beginning of the response
-func setMessageSize(res []byte) {
+func setMessageSize(res []byte) []byte {
 	binary.BigEndian.PutUint32(res[0:4], uint32(len(res)-4))
+	return res
 }
 
 // Function to process client requests
 func handleRequest(req []byte) []byte {
 	headers := parseHeaders(req)
+	if headers == nil {
+		// Return a proper Kafka-like error response
+		fmt.Println("Invalid request: unable to parse headers")
+		res := make([]byte, 8)
+		binary.BigEndian.PutUint32(res[4:8], 0) // Correlation ID = 0 for invalid requests
+		res = append(res, 0, 42)                // Error code 42 (invalid request)
+		return setMessageSize(res)
+	}
 	return makeResponse(headers)
 }
